@@ -1,0 +1,123 @@
+package com.vestalihy.compat;
+
+import dev.ryanhcode.sable.Sable;
+import dev.ryanhcode.sable.companion.math.JOMLConversion;
+import dev.ryanhcode.sable.companion.math.Pose3dc;
+import dev.ryanhcode.sable.sublevel.SubLevel;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
+import org.joml.Vector3d;
+
+/**
+ * Helper to access Sable API for coordinate transformations.
+ */
+public class SableHelper {
+
+    public static boolean isAvailable() {
+        try {
+            Class.forName("dev.ryanhcode.sable.Sable");
+            return true;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+    }
+
+    /**
+     * @return The SubLevel object managing the position or null
+     */
+    public static Object getSubLevelManagingPos(Level level, BlockPos pos) {
+        if (!isAvailable()) return null;
+        return Sable.HELPER.getContaining(level, pos);
+    }
+
+    /**
+     * @return The SubLevel object managing the position or null
+     */
+    public static Object getSubLevelManagingPos(Level level, Vec3 pos) {
+        if (!isAvailable() || pos == null) return null;
+        return Sable.HELPER.getContaining(level, JOMLConversion.toJOML(pos));
+    }
+
+    /**
+     * Transforms sublevel coordinates to world coordinates.
+     */
+    public static Vec3 sublevelToWorld(Object subLevelObj, Vec3 sublevelPos) {
+        if (subLevelObj == null || !(subLevelObj instanceof SubLevel subLevel))
+            return sublevelPos;
+        
+        Pose3dc pose = subLevel.logicalPose();
+        return pose.transformPosition(sublevelPos);
+    }
+
+    /**
+     * Helper to get the absolute world eye position of an entity,
+     * accounting for Sable sublevels.
+     */
+    public static Vec3 getEyePosInWorld(Entity entity, float partialTicks) {
+        if (isAvailable()) {
+            return Sable.HELPER.getEyePositionInterpolated(entity, partialTicks);
+        }
+        return entity.getEyePosition(partialTicks);
+    }
+
+    /**
+     * Transforms a direction vector from sublevel to world space.
+     */
+    public static Vec3 transformDirection(Object subLevelObj, Vec3 localDir) {
+        if (subLevelObj == null || !(subLevelObj instanceof SubLevel subLevel))
+            return localDir;
+        
+        Pose3dc pose = subLevel.logicalPose();
+        return pose.transformNormal(localDir);
+    }
+
+    /**
+     * Extracts absolute world yaw, pitch, and roll from sublevel transform.
+     * 
+     * @return [yaw, pitch, roll]
+     */
+    public static float[] getWorldRotations(Object subLevelObj, float localYaw, float localPitch) {
+        if (subLevelObj == null || !(subLevelObj instanceof SubLevel subLevel))
+            return new float[] { localYaw, localPitch, 0 };
+
+        // Local look vector based on localYaw/localPitch
+        double radYaw = Math.toRadians(localYaw + 90);
+        double radPitch = Math.toRadians(-localPitch);
+        double lx = Math.cos(radPitch) * Math.cos(radYaw);
+        double ly = Math.sin(radPitch);
+        double lz = Math.cos(radPitch) * Math.sin(radYaw);
+
+        Vec3 worldLook = transformDirection(subLevelObj, new Vec3(lx, ly, lz));
+
+        float worldYaw = (float) Math.toDegrees(Math.atan2(worldLook.z, worldLook.x)) - 90;
+        float worldPitch = (float) Math.toDegrees(Math.asin(
+                Math.max(-1, Math.min(1, -worldLook.y))));
+
+        // Compute roll by transforming local up vector
+        double upLx = Math.sin(radPitch) * Math.cos(radYaw);
+        double upLy = Math.cos(radPitch);
+        double upLz = Math.sin(radPitch) * Math.sin(radYaw);
+        Vec3 localUp = new Vec3(-upLx, upLy, -upLz);
+        Vec3 worldUp = transformDirection(subLevelObj, localUp);
+
+        // Project worldUp onto the plane perpendicular to worldLook
+        Vec3 wl = worldLook.normalize();
+        double dot = worldUp.dot(wl);
+        Vec3 projUp = worldUp.subtract(wl.scale(dot)).normalize();
+
+        // Reference "no-roll" up: world Y projected onto the same plane
+        Vec3 refUp = new Vec3(0, 1, 0);
+        double dotRef = refUp.dot(wl);
+        Vec3 projRef = refUp.subtract(wl.scale(dotRef)).normalize();
+
+        // Roll = angle between projRef and projUp around wl axis
+        double cosRoll = projUp.dot(projRef);
+        Vec3 cross = projRef.cross(projUp);
+        double sinRoll = cross.dot(wl);
+        float worldRoll = (float) Math.toDegrees(Math.atan2(sinRoll, cosRoll));
+
+        return new float[] { worldYaw, worldPitch, worldRoll };
+    }
+}

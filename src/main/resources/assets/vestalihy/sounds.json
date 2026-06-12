@@ -1,0 +1,34 @@
+{
+  "thermal_on": {
+    "sounds": [
+      {
+        "name": "vestalihy:thermal_on",
+        "stream": false
+      }
+    ]
+  },
+  "thermal_off": {
+    "sounds": [
+      {
+        "name": "vestalihy:thermal_off",
+        "stream": false
+      }
+    ]
+  },
+  "fonts": {
+    "sounds": [
+      {
+        "name": "vestalihy:fonts",
+        "stream": false
+      }
+    ]
+  },
+  "fire_ptur": {
+    "sounds": [
+      {
+        "name": "vestalihy:fire_ptur",
+        "stream": false
+      }
+    ]
+  }
+}

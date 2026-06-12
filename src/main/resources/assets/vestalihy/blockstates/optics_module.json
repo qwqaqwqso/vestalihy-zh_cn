@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "facing=north": { "model": "vestalihy:block/optics_module" },
+    "facing=south": { "model": "vestalihy:block/optics_module", "y": 180 },
+    "facing=west": { "model": "vestalihy:block/optics_module", "y": 270 },
+    "facing=east": { "model": "vestalihy:block/optics_module", "y": 90 }
+  }
+}

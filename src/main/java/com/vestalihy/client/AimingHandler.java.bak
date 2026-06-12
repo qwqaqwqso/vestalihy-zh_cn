@@ -1,0 +1,583 @@
+package com.vestalihy.client;
+
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import com.vestalihy.block.OpticsModuleBlock;
+import com.vestalihy.block.ScopeType;
+import com.vestalihy.compat.CBCHelper;
+import com.vestalihy.compat.SableHelper;
+import com.vestalihy.network.AimingPacket;
+import com.vestalihy.network.ModNetwork;
+import com.vestalihy.registry.ModSounds;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.client.resources.sounds.SimpleSoundInstance;
+import net.minecraft.client.resources.sounds.SoundInstance;
+import net.neoforged.bus.api.EventPriority;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.neoforge.client.event.InputEvent;
+import net.neoforged.neoforge.client.event.RenderGuiLayerEvent;
+import net.neoforged.neoforge.client.event.RenderHandEvent;
+import net.neoforged.neoforge.client.event.ViewportEvent;
+import net.neoforged.neoforge.client.gui.VanillaGuiLayers;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.client.event.RenderFrameEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
+
+public class AimingHandler {
+
+    private static boolean isAiming = false;
+    private static boolean thermalVisionActive = false;
+    private static BlockPos cannonMountPos = null;
+    private static BlockPos aimingBlockPos = null;
+    private static Direction aimingFacing = Direction.NORTH;
+    private static float zoomLevel = 1.0f;
+    private static ResourceLocation currentScopeTexture = null;
+    private static ScopeType currentScopeType = null;
+    private static double[] cameraPos = null;
+    private static float[] cameraRot = null;
+    private static float prevYaw = 0f;
+    private static float offsetX = 0f;
+    private static float offsetY = 0f;
+    private static boolean wasThermalActive = false;
+    private static BlockPos opticsModulePos = null;
+    private static Direction opticsModuleFacing = Direction.NORTH;
+
+    private static final float MIN_ZOOM = 1.0f;
+    private static final float MAX_ZOOM = 8.0f;
+    private static final float ZOOM_STEP = 0.5f;
+
+    private static final int MAX_SCAN_DISTANCE = 16;
+
+    public static boolean isAiming() {
+        return isAiming;
+    }
+
+    public static boolean isThermalVisionActive() {
+        return thermalVisionActive && isAiming;
+    }
+
+    public static double[] getCameraPosition() {
+        return cameraPos;
+    }
+
+    public static float[] getCameraRotation() {
+        return cameraRot;
+    }
+
+    public static void startAiming(BlockPos blockPos, BlockPos mountPos, Direction facing, Vec3 hitPos,
+            ScopeType scopeType, BlockPos modulePos) {
+        Minecraft mc = Minecraft.getInstance();
+
+        isAiming = true;
+        cannonMountPos = mountPos;
+        aimingBlockPos = blockPos;
+        aimingFacing = facing;
+        zoomLevel = 1.0f;
+        currentScopeType = scopeType;
+        currentScopeTexture = scopeType.getTextureLocation(false);
+
+        opticsModulePos = modulePos;
+        if (modulePos != null && mc.level != null) {
+            BlockState moduleState = mc.level.getBlockState(modulePos);
+            if (moduleState.getBlock() instanceof OpticsModuleBlock) {
+                opticsModuleFacing = moduleState.getValue(OpticsModuleBlock.FACING);
+            } else {
+                opticsModulePos = null;
+            }
+        }
+
+        if (currentScopeType == ScopeType.BTR) {
+            thermalVisionActive = false;
+        }
+
+        if (opticsModulePos == null) {
+            thermalVisionActive = false;
+        }
+
+        if (mc.level != null && mc.player != null) {
+            setMinimapVisible(false);
+            updateCameraPosition(0);
+            updateShaderEffect();
+        }
+
+        net.neoforged.neoforge.network.PacketDistributor.sendToServer(new AimingPacket(mountPos, true));
+    }
+
+    public static void stopAiming() {
+        if (!isAiming)
+            return;
+
+        isAiming = false;
+
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player != null) {
+            setMinimapVisible(true);
+        }
+
+        if (mc.gameRenderer.currentEffect() != null) {
+            mc.gameRenderer.shutdownEffect();
+        }
+
+        if (cannonMountPos != null) {
+            net.neoforged.neoforge.network.PacketDistributor.sendToServer(new AimingPacket(cannonMountPos, false));
+        }
+
+        cannonMountPos = null;
+        aimingBlockPos = null;
+        zoomLevel = 1.0f;
+        cameraPos = null;
+        cameraRot = null;
+        currentScopeType = null;
+        currentScopeTexture = null;
+        opticsModulePos = null;
+    }
+
+    private static SimpleSoundInstance thermalBackground = null;
+    private static ScheduledExecutorService thermalScheduler = null;
+
+    private static void updateShaderEffect() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.gameRenderer == null)
+            return;
+
+        if (thermalVisionActive) {
+            mc.gameRenderer.loadEffect(ResourceLocation.fromNamespaceAndPath("vestalihy", "shaders/post/thermal.json"));
+
+            if (!wasThermalActive) {
+                mc.player.playSound(ModSounds.THERMAL_ON.get(), 1.0f, 1.0f);
+                wasThermalActive = true;
+                thermalBackground = new SimpleSoundInstance(ModSounds.FONTS.get().getLocation(),
+                        SoundSource.MASTER, 1.0f, 1.0f, SoundInstance.createUnseededRandom(),
+                        false, 0, SoundInstance.Attenuation.NONE,
+                        0.0D, 0.0D, 0.0D, true);
+
+                if (thermalScheduler == null || thermalScheduler.isShutdown()) {
+                    thermalScheduler = Executors.newSingleThreadScheduledExecutor();
+                    thermalScheduler.scheduleAtFixedRate(() -> {
+                        if (thermalVisionActive && mc.getSoundManager() != null && thermalBackground != null) {
+                            mc.getSoundManager().play(thermalBackground);
+                        } else {
+                            thermalScheduler.shutdown();
+                        }
+                    }, 0, 3, TimeUnit.SECONDS);
+                }
+            }
+        } else {
+            mc.gameRenderer.shutdownEffect();
+
+            if (wasThermalActive) {
+                mc.player.playSound(ModSounds.THERMAL_OFF.get(), 1.0f, 1.0f);
+                wasThermalActive = false;
+                if (thermalBackground != null) {
+                    mc.getSoundManager().stop(thermalBackground);
+                    thermalBackground = null;
+                }
+
+                if (thermalScheduler != null && !thermalScheduler.isShutdown()) {
+                    thermalScheduler.shutdown();
+                }
+            }
+        }
+    }
+
+    @SubscribeEvent
+    public static void onClientTick(ClientTickEvent.Post event) {
+        if (!isAiming)
+            return;
+
+        Minecraft mc = Minecraft.getInstance();
+        LocalPlayer player = mc.player;
+        if (player == null || mc.level == null) {
+            stopAiming();
+            return;
+        }
+
+        if (player.input.shiftKeyDown) {
+            stopAiming();
+            wasThermalActive = false;
+            mc.gameRenderer.shutdownEffect();
+            if (thermalBackground != null) mc.getSoundManager().stop(thermalBackground);
+            thermalBackground = null;
+            return;
+        }
+
+        if (cannonMountPos != null && mc.level.getBlockEntity(cannonMountPos) == null) {
+            stopAiming();
+            return;
+        }
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void onRenderFrame(RenderFrameEvent.Pre event) {
+        if (!isAiming)
+            return;
+
+        updateCameraPosition(event.getPartialTick().getGameTimeDeltaTicks());
+        updateShaderTime();
+    }
+
+    private static void updateShaderTime() {
+        if (!thermalVisionActive)
+            return;
+
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.gameRenderer == null)
+            return;
+
+        net.minecraft.client.renderer.PostChain effectChain = mc.gameRenderer.currentEffect();
+        if (effectChain != null) {
+            float time = (float) (System.currentTimeMillis() % 100000) / 1000.0f;
+            try {
+                java.lang.reflect.Field passesField = null;
+                try {
+                    passesField = net.minecraft.client.renderer.PostChain.class.getDeclaredField("passes");
+                } catch (NoSuchFieldException e) {
+                    passesField = net.minecraft.client.renderer.PostChain.class.getDeclaredField("f_110009_");
+                }
+                passesField.setAccessible(true);
+                java.util.List<net.minecraft.client.renderer.PostPass> passes = (java.util.List<net.minecraft.client.renderer.PostPass>) passesField
+                        .get(effectChain);
+
+                for (net.minecraft.client.renderer.PostPass pass : passes) {
+                    java.lang.reflect.Field shaderField = null;
+                    try {
+                        shaderField = net.minecraft.client.renderer.PostPass.class.getDeclaredField("effect");
+                    } catch (NoSuchFieldException e) {
+                        shaderField = net.minecraft.client.renderer.PostPass.class.getDeclaredField("f_110196_");
+                    }
+                    shaderField.setAccessible(true);
+                    net.minecraft.client.renderer.ShaderInstance shader = (net.minecraft.client.renderer.ShaderInstance) shaderField
+                            .get(pass);
+
+                    if (shader != null) {
+                        com.mojang.blaze3d.shaders.AbstractUniform timeUniform = shader.getUniform("Time");
+                        if (timeUniform != null) {
+                            timeUniform.set(time);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+            }
+        }
+    }
+
+    private static double findClearDistance(Level level, BlockPos startPos, Direction facing, Object subLevel) {
+        Vec3 faceNormal = Vec3.atLowerCornerOf(facing.getNormal());
+        Vec3 startVec = Vec3.atCenterOf(startPos);
+        BlockEntity be = level.getBlockEntity(startPos);
+        if (be instanceof com.vestalihy.block.OpticsModuleBlockEntity optics) {
+            startVec = startVec.add(optics.getOffsetX(), optics.getOffsetY(), optics.getOffsetZ());
+        }
+
+        for (double dist = 0.5; dist <= MAX_SCAN_DISTANCE; dist += 0.5) {
+            Vec3 checkPosVec = startVec.add(faceNormal.scale(dist));
+            BlockPos checkPos = BlockPos.containing(checkPosVec.x, checkPosVec.y, checkPosVec.z);
+            BlockState state = level.getBlockState(checkPos);
+
+            if (state.isAir() || !state.isSolid()) {
+                return dist;
+            }
+        }
+        return MAX_SCAN_DISTANCE;
+    }
+
+    private static void updateCameraPosition(float partialTicks) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null || aimingBlockPos == null)
+            return;
+
+        if (opticsModulePos != null) {
+            if (!(mc.level.getBlockState(opticsModulePos).getBlock() instanceof OpticsModuleBlock)) {
+                opticsModulePos = null;
+                if (thermalVisionActive) {
+                    thermalVisionActive = false;
+                    updateShaderEffect();
+                }
+            } else {
+                updateCameraFromOpticsModule(mc, partialTicks);
+                return;
+            }
+        }
+
+        updateCameraFromScope(mc, partialTicks);
+    }
+
+    private static float[] calculateAlignedCameraRotations(Object sightSubLevel, Object mountSubLevel, float localYaw, float localPitch, Minecraft mc) {
+        Object rotSubLevel = mountSubLevel != null ? mountSubLevel : sightSubLevel;
+        if (rotSubLevel == null) {
+            return new float[] { localYaw, localPitch };
+        }
+
+        // Get absolute world rotations of the mount/sight
+        float[] worldRot = SableHelper.getWorldRotations(rotSubLevel, localYaw, localPitch);
+        float worldYaw = worldRot[0];
+        float worldPitch = worldRot[1];
+
+        float finalYaw = worldYaw;
+        float finalPitch = worldPitch;
+
+        Object playerSubLevel = SableHelper.getSubLevelManagingPos(mc.level, mc.player.position());
+        if (playerSubLevel != null) {
+            float[] shipRot = SableHelper.getWorldRotations(playerSubLevel, 0f, 0f);
+            float shipWorldYaw = shipRot[0];
+            float shipWorldPitch = shipRot[1];
+
+            finalYaw = (worldYaw - shipWorldYaw) % 360.0f;
+            if (finalYaw < 0) {
+                finalYaw += 360.0f;
+            }
+            finalPitch = worldPitch - shipWorldPitch;
+        }
+
+        return new float[] { finalYaw, finalPitch };
+    }
+
+    private static void updateCameraFromOpticsModule(Minecraft mc, float partialTicks) {
+        Object subLevel = SableHelper.getSubLevelManagingPos(mc.level, opticsModulePos);
+
+        float yaw;
+        float pitch;
+
+        BlockEntity be = cannonMountPos != null ? mc.level.getBlockEntity(cannonMountPos) : null;
+        boolean hasCannon = be != null && CBCHelper.isCannonMount(be) && CBCHelper.isRunning(be);
+        if (hasCannon) {
+            yaw = CBCHelper.getYawOffset(be, partialTicks);
+            pitch = CBCHelper.getPitchOffset(be, partialTicks);
+        } else {
+            yaw = opticsModuleFacing.toYRot();
+            pitch = 0;
+        }
+
+        Object mountSubLevel = cannonMountPos != null ? SableHelper.getSubLevelManagingPos(mc.level, cannonMountPos) : null;
+        float[] aligned = calculateAlignedCameraRotations(subLevel, mountSubLevel, yaw, pitch, mc);
+        yaw = aligned[0];
+        pitch = aligned[1];
+
+        // Position offset along the block's physical facing to exit the hull
+        double forwardOffset = findClearDistance(mc.level, opticsModulePos, opticsModuleFacing, subLevel);
+        Vec3 faceNormal = Vec3.atLowerCornerOf(opticsModuleFacing.getNormal());
+        Vec3 localOffset = faceNormal.scale(forwardOffset);
+        Vec3 shipyardAnchor = Vec3.atCenterOf(opticsModulePos);
+        
+        BlockEntity moduleBe = mc.level.getBlockEntity(opticsModulePos);
+        if (moduleBe instanceof com.vestalihy.block.OpticsModuleBlockEntity optics) {
+            shipyardAnchor = shipyardAnchor.add(optics.getOffsetX(), optics.getOffsetY(), optics.getOffsetZ());
+        }
+        
+        Vec3 shipyardTarget = shipyardAnchor.add(localOffset);
+
+        Vec3 finalWorldPos;
+
+        if (subLevel != null) {
+            finalWorldPos = SableHelper.sublevelToWorld(subLevel, shipyardTarget);
+        } else {
+            finalWorldPos = shipyardTarget;
+        }
+
+        // Always store LOCAL rotation — Sable's CameraMixin.sable$rotateView()
+        // will premultiply the ship's orientation quaternion onto the camera,
+        // so we must NOT pre-transform to world space ourselves.
+        cameraPos = new double[] { finalWorldPos.x, finalWorldPos.y, finalWorldPos.z };
+        cameraRot = new float[] { yaw, -pitch, 0 };
+    }
+
+    private static void updateCameraFromScope(Minecraft mc, float partialTicks) {
+        Object subLevel = SableHelper.getSubLevelManagingPos(mc.level, aimingBlockPos);
+
+        float yaw;
+        float pitch;
+
+        BlockEntity be = cannonMountPos != null ? mc.level.getBlockEntity(cannonMountPos) : null;
+        boolean hasCannon = be != null && CBCHelper.isCannonMount(be) && CBCHelper.isRunning(be);
+        if (hasCannon) {
+            yaw = CBCHelper.getYawOffset(be, partialTicks);
+            pitch = CBCHelper.getPitchOffset(be, partialTicks);
+        } else {
+            yaw = aimingFacing.toYRot();
+            pitch = 0;
+        }
+
+        Object mountSubLevel = cannonMountPos != null ? SableHelper.getSubLevelManagingPos(mc.level, cannonMountPos) : null;
+        float[] aligned = calculateAlignedCameraRotations(subLevel, mountSubLevel, yaw, pitch, mc);
+        yaw = aligned[0];
+        pitch = aligned[1];
+
+        // Position offset along the block's physical facing to exit the hull
+        double forwardOffset = findClearDistance(mc.level, aimingBlockPos, aimingFacing, subLevel);
+        Vec3 faceNormal = Vec3.atLowerCornerOf(aimingFacing.getNormal());
+        Vec3 localOffset = faceNormal.scale(forwardOffset);
+        Vec3 shipyardAnchor = Vec3.atCenterOf(aimingBlockPos);
+        Vec3 shipyardTarget = shipyardAnchor.add(localOffset);
+
+        Vec3 finalWorldPos;
+
+        if (subLevel != null) {
+            finalWorldPos = SableHelper.sublevelToWorld(subLevel, shipyardTarget);
+        } else {
+            finalWorldPos = shipyardTarget;
+        }
+
+        // Always store LOCAL rotation — Sable's CameraMixin.sable$rotateView()
+        // will premultiply the ship's orientation quaternion onto the camera,
+        // so we must NOT pre-transform to world space ourselves.
+        cameraPos = new double[] { finalWorldPos.x, finalWorldPos.y, finalWorldPos.z };
+        cameraRot = new float[] { yaw, -pitch, 0 };
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void onComputeFov(ViewportEvent.ComputeFov event) {
+        if (!isAiming)
+            return;
+        event.setFOV(event.getFOV() / zoomLevel);
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void onComputeFogColor(ViewportEvent.ComputeFogColor event) {
+        if (isThermalVisionActive()) {
+            event.setRed(0);
+            event.setGreen(0);
+            event.setBlue(0);
+        }
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void onCameraAngles(ViewportEvent.ComputeCameraAngles event) {
+        if (!isAiming || cameraRot == null)
+            return;
+
+        event.setYaw(cameraRot[0]);
+        event.setPitch(cameraRot[1]);
+        event.setRoll(cameraRot[2]);
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void onMouseScroll(InputEvent.MouseScrollingEvent event) {
+        if (!isAiming)
+            return;
+
+        double delta = event.getScrollDeltaY();
+        if (delta > 0) {
+            zoomLevel = Math.min(MAX_ZOOM, zoomLevel + ZOOM_STEP);
+        } else if (delta < 0) {
+            zoomLevel = Math.max(MIN_ZOOM, zoomLevel - ZOOM_STEP);
+        }
+
+        event.setCanceled(true);
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void onKeyInput(InputEvent.Key event) {
+        if (!isAiming)
+            return;
+        if (Keybinds.THERMAL_VISION_KEY.consumeClick()) {
+            if (currentScopeType != ScopeType.BTR && opticsModulePos != null) {
+                thermalVisionActive = !thermalVisionActive;
+                updateShaderEffect();
+            }
+        }
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void onMouseInput(InputEvent.MouseButton.Pre event) {
+        if (isAiming && event.getButton() == 0) {
+            event.setCanceled(true);
+        }
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void onLeftClickBlock(PlayerInteractEvent.LeftClickBlock event) {
+        if (isAiming) {
+            event.setCanceled(true);
+        }
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock event) {
+        if (event.getLevel().isClientSide() && event.getEntity().isShiftKeyDown() && event.getItemStack().isEmpty()) {
+            BlockState state = event.getLevel().getBlockState(event.getPos());
+            if (state.getBlock() instanceof OpticsModuleBlock) {
+                BlockEntity be = event.getLevel().getBlockEntity(event.getPos());
+                if (be instanceof com.vestalihy.block.OpticsModuleBlockEntity optics) {
+                    Minecraft.getInstance().setScreen(new com.vestalihy.client.gui.OpticsModuleScreen(event.getPos(), optics.getOffsetX(), optics.getOffsetY(), optics.getOffsetZ()));
+                    event.setCanceled(true);
+                    event.setCancellationResult(net.minecraft.world.InteractionResult.SUCCESS);
+                }
+            }
+        }
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void onMovementInput(net.neoforged.neoforge.client.event.MovementInputUpdateEvent event) {
+        if (!isAiming)
+            return;
+
+        var input = event.getInput();
+        input.up = false;
+        input.down = false;
+        input.left = false;
+        input.right = false;
+        input.jumping = false;
+        input.forwardImpulse = 0;
+        input.leftImpulse = 0;
+    }
+
+    @SubscribeEvent
+    public static void onRenderHand(RenderHandEvent event) {
+        if (isAiming) {
+            event.setCanceled(true);
+        }
+    }
+
+    @SubscribeEvent
+    public static void onRenderGuiLayerPre(RenderGuiLayerEvent.Pre event) {
+        if (!isAiming) return;
+        
+        if (event.getName().equals(VanillaGuiLayers.CROSSHAIR)) {
+            event.setCanceled(true);
+        } else if (event.getName().equals(VanillaGuiLayers.HOTBAR)) {
+            event.setCanceled(true);
+
+            if (currentScopeTexture == null) return;
+
+            int width = event.getGuiGraphics().guiWidth();
+            int height = event.getGuiGraphics().guiHeight();
+
+            var mc = Minecraft.getInstance();
+            var player = mc.player;
+            net.minecraft.client.gui.GuiGraphics graphics = event.getGuiGraphics();
+            ResourceLocation texture = currentScopeType.getTextureLocation(isThermalVisionActive());
+            graphics.blit(texture, 0, 0, 0, 0, width, height, width, height);
+
+            ResourceLocation reticle = currentScopeType.getReticleTexture(isThermalVisionActive());
+            if (reticle != null && (isThermalVisionActive() || currentScopeType != ScopeType.CHINA)) {
+                graphics.blit(reticle, 0, 0, 0, 0, width, height, width, height);
+            }
+        }
+    }
+
+    private static void setMinimapVisible(boolean visible) {
+        try {
+            Class.forName("xaero.minimap.XaeroMinimap");
+            var settings = Class.forName("xaero.minimap.XaeroMinimap").getMethod("getSettings").invoke(null);
+            settings.getClass().getField("minimap").set(settings, visible);
+        } catch (Exception ignored) {
+        }
+
+        try {
+            Class.forName("journeymap.client.core.JourneyMapClient");
+            var jmInstance = Class.forName("journeymap.client.core.JourneyMapClient").getMethod("getInstance").invoke(null);
+            jmInstance.getClass().getMethod("setUiVisible", boolean.class).invoke(jmInstance, visible);
+        } catch (Exception ignored) {
+        }
+    }
+}

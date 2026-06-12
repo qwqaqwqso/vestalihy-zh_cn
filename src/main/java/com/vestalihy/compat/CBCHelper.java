@@ -1,0 +1,254 @@
+package com.vestalihy.compat;
+
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.Level;
+import net.minecraft.core.Direction;
+import net.minecraft.world.level.block.entity.BlockEntity;
+
+import java.lang.reflect.Method;
+import net.minecraft.world.phys.Vec3;
+import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Helper to access Create Big Cannons CannonMountBlockEntity and Compact Cannon Mount at runtime via reflection.
+ */
+public class CBCHelper {
+    private static final String CANNON_MOUNT_BE_CLASS = "rbasamoyai.createbigcannons.cannon_control.cannon_mount.CannonMountBlockEntity";
+    private static final String COMPACT_CANNON_MOUNT_BE_CLASS = "com.cubester.cbc_compact_mount.content.CompactCannonMountBlockEntity";
+
+    private static Class<?> cannonMountClass;
+    private static Class<?> compactCannonMountClass;
+
+    private static Method isRunningMethod;
+    private static Method getYawOffsetMethod;
+    private static Method getPitchOffsetMethod;
+
+    private static Method compactIsRunningMethod;
+    private static Method compactGetPitchOffsetMethod;
+    private static Method compactGetContraptionDirectionMethod;
+
+    private static boolean initialized = false;
+    private static boolean available = false;
+
+    private static void init() {
+        if (initialized)
+            return;
+        initialized = true;
+        
+        // Try loading the regular CBC Cannon Mount
+        try {
+            cannonMountClass = Class.forName(CANNON_MOUNT_BE_CLASS);
+            isRunningMethod = cannonMountClass.getMethod("isRunning");
+            getYawOffsetMethod = cannonMountClass.getMethod("getYawOffset", float.class);
+            getPitchOffsetMethod = cannonMountClass.getMethod("getPitchOffset", float.class);
+            available = true;
+        } catch (Exception e) {
+            // expected if CBC is not present or structured differently
+        }
+
+        // Try loading the Compact Cannon Mount
+        try {
+            compactCannonMountClass = Class.forName(COMPACT_CANNON_MOUNT_BE_CLASS);
+            compactIsRunningMethod = compactCannonMountClass.getMethod("isRunning");
+            compactGetPitchOffsetMethod = compactCannonMountClass.getMethod("getPitchOffset", float.class);
+            compactGetContraptionDirectionMethod = compactCannonMountClass.getMethod("getContraptionDirection");
+            available = true;
+        } catch (Exception e) {
+            // expected if Compact Cannon Mount is not present
+        }
+    }
+
+    public static boolean isAvailable() {
+        init();
+        return available;
+    }
+
+    public static boolean isCannonMount(BlockEntity be) {
+        init();
+        if (be == null)
+            return false;
+        return (cannonMountClass != null && cannonMountClass.isInstance(be)) ||
+               (compactCannonMountClass != null && compactCannonMountClass.isInstance(be));
+    }
+
+    public static boolean isCompactCannonMount(BlockEntity be) {
+        init();
+        if (be == null)
+            return false;
+        return compactCannonMountClass != null && compactCannonMountClass.isInstance(be);
+    }
+
+    public static net.minecraft.world.entity.Entity getCompactContraption(BlockEntity be) {
+        init();
+        if (be == null || compactCannonMountClass == null)
+            return null;
+        try {
+            Method getContraptionMethod = compactCannonMountClass.getMethod("getContraption");
+            return (net.minecraft.world.entity.Entity) getContraptionMethod.invoke(be);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    public static boolean isRunning(BlockEntity be) {
+        init();
+        if (be == null)
+            return false;
+        if (cannonMountClass != null && cannonMountClass.isInstance(be)) {
+            try {
+                return (boolean) isRunningMethod.invoke(be);
+            } catch (Exception e) {
+                return false;
+            }
+        }
+        if (compactCannonMountClass != null && compactCannonMountClass.isInstance(be)) {
+            try {
+                return (boolean) compactIsRunningMethod.invoke(be);
+            } catch (Exception e) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    public static float getYawOffset(BlockEntity be, float partialTicks) {
+        init();
+        if (be == null)
+            return 0f;
+        if (cannonMountClass != null && cannonMountClass.isInstance(be)) {
+            try {
+                return (float) getYawOffsetMethod.invoke(be, partialTicks);
+            } catch (Exception e) {
+                return 0f;
+            }
+        }
+        if (compactCannonMountClass != null && compactCannonMountClass.isInstance(be)) {
+            try {
+                net.minecraft.world.entity.Entity contraption = getCompactContraption(be);
+                if (contraption != null) {
+                    return contraption.getViewYRot(partialTicks);
+                }
+                Direction dir = (Direction) compactGetContraptionDirectionMethod.invoke(be);
+                if (dir != null) {
+                    return dir.toYRot();
+                }
+            } catch (Exception e) {
+                return 0f;
+            }
+        }
+        return 0f;
+    }
+
+    public static float getPitchOffset(BlockEntity be, float partialTicks) {
+        init();
+        if (be == null)
+            return 0f;
+        if (cannonMountClass != null && cannonMountClass.isInstance(be)) {
+            try {
+                return (float) getPitchOffsetMethod.invoke(be, partialTicks);
+            } catch (Exception e) {
+                return 0f;
+            }
+        }
+        if (compactCannonMountClass != null && compactCannonMountClass.isInstance(be)) {
+            try {
+                return (float) compactGetPitchOffsetMethod.invoke(be, partialTicks);
+            } catch (Exception e) {
+                return 0f;
+            }
+        }
+        return 0f;
+    }
+
+    public static boolean isActiveCannonMount(Level level, BlockPos pos) {
+        if (level == null)
+            return false;
+        BlockEntity be = level.getBlockEntity(pos);
+        return isCannonMount(be) && isRunning(be);
+    }
+
+    public static BlockPos findNearbyCannonMount(Level level, BlockPos pos) {
+        init();
+        if (level == null || pos == null) {
+            return null;
+        }
+
+        // 1. Get the subLevel of the sight pos
+        Object sightSubLevel = SableHelper.getSubLevelManagingPos(level, pos);
+        
+        // 2. Get absolute world position of the sight pos
+        Vec3 sightWorldPos;
+        if (sightSubLevel != null) {
+            sightWorldPos = SableHelper.sublevelToWorld(sightSubLevel, Vec3.atCenterOf(pos));
+        } else {
+            sightWorldPos = Vec3.atCenterOf(pos);
+        }
+
+        BlockPos bestMountPos = null;
+        double bestDistSq = Double.MAX_VALUE;
+
+        // 3. Search in all sub-levels
+        if (SableHelper.isAvailable()) {
+            try {
+                dev.ryanhcode.sable.api.sublevel.SubLevelContainer container = dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(level);
+                if (container != null) {
+                    for (dev.ryanhcode.sable.sublevel.SubLevel subLevel : container.getAllSubLevels()) {
+                        if (subLevel == null) continue;
+                        dev.ryanhcode.sable.sublevel.plot.LevelPlot plot = subLevel.getPlot();
+                        if (plot == null) continue;
+                        
+                        for (dev.ryanhcode.sable.sublevel.plot.PlotChunkHolder holder : plot.getLoadedChunks()) {
+                            if (holder == null) continue;
+                            net.minecraft.world.level.chunk.LevelChunk chunk = holder.getChunk();
+                            if (chunk == null) continue;
+                            
+                            List<BlockEntity> bes = new ArrayList<>(chunk.getBlockEntities().values());
+                            for (BlockEntity be : bes) {
+                                if (be != null && isCannonMount(be) && isRunning(be)) {
+                                    BlockPos mPos = be.getBlockPos();
+                                    Vec3 mWorldPos = SableHelper.sublevelToWorld(subLevel, Vec3.atCenterOf(mPos));
+                                    double distSq = sightWorldPos.distanceToSqr(mWorldPos);
+                                    if (distSq < bestDistSq && distSq <= 25.0) {
+                                        bestDistSq = distSq;
+                                        bestMountPos = mPos;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable e) {
+                // Fail-safe
+            }
+        }
+
+        // 4. Also search in the main world space (not in any sub-level) near the sight's world position!
+        BlockPos worldPosAnchor = BlockPos.containing(sightWorldPos.x, sightWorldPos.y, sightWorldPos.z);
+        int searchRadius = 5;
+        for (int x = -searchRadius; x <= searchRadius; x++) {
+            for (int y = -searchRadius; y <= searchRadius; y++) {
+                for (int z = -searchRadius; z <= searchRadius; z++) {
+                    BlockPos currentPos = worldPosAnchor.offset(x, y, z);
+                    if (SableHelper.getSubLevelManagingPos(level, currentPos) == null) {
+                        if (isActiveCannonMount(level, currentPos)) {
+                            double distSq = sightWorldPos.distanceToSqr(Vec3.atCenterOf(currentPos));
+                            if (distSq < bestDistSq && distSq <= 25.0) {
+                                bestDistSq = distSq;
+                                bestMountPos = currentPos;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Limit maximum distance to 5 blocks (25.0 squared) to prevent connecting to unrelated structures
+        if (bestDistSq <= 25.0) {
+            return bestMountPos;
+        }
+
+        return null;
+    }
+}

@@ -1,0 +1,144 @@
+import proguard.gradle.ProGuardTask
+
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.guardsquare:proguard-gradle:7.5.0'
+    }
+}
+
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'net.neoforged.gradle.userdev' version '7.1.26'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+repositories {
+    mavenLocal()
+    maven { url = 'https://maven.neoforged.net/releases' }
+    maven { url = 'https://maven.tterrag.com/' }
+    maven { url = 'https://api.modrinth.com/maven' }
+    maven { url = 'https://maven.createmod.net' }
+    maven { url = 'https://maven.su5ed.dev/releases' }
+    maven { url = 'https://maven.ryanhcode.dev/releases' }
+    maven { url = "https://maven.firstdarkdev.xyz/snapshots" }
+    maven { url = "https://maven.firstdarkdev.xyz/releases" }
+    maven { url = "https://maven.blamejared.com" }
+    maven { url = "https://maven.theillusivec4.top/" }
+    maven {
+        name = "Mortuusars Github Maven"
+        url = "https://raw.githubusercontent.com/mortuusars/resources/main/maven/"
+    }
+}
+
+runs {
+    configureEach {
+        systemProperty 'forge.logging.markers', 'REGISTRIES'
+        systemProperty 'forge.logging.console.level', 'debug'
+        modSource project.sourceSets.main
+    }
+
+    client {
+        systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+    }
+
+    server {
+        systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        argument('--nogui')
+    }
+
+    data {
+        arguments.addAll '--mod', project.mod_id, '--all', '--output', file('src/generated/resources/').getAbsolutePath(), '--existing', file('src/main/resources/').getAbsolutePath()
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+dependencies {
+    implementation "net.neoforged:neoforge:${neo_version}"
+
+    // Sable dependency
+    implementation("dev.ryanhcode.sable:sable-neoforge-1.21.1:${sable_version}") {
+        transitive = false
+    }
+    implementation "dev.ryanhcode.sable-companion:sable-companion-common-1.21.1:${sable_companion_version}"
+
+    // CBC dependency
+    implementation "com.rbasamoyai:createbigcannons:${cbc_version}"
+
+    // Ritchie's Projectile Library — compileOnly, в рантайме загружается как зависимость CBC.
+    // Нужна для компиляции CBCProjectileBurst.spawnConeBurst (generic bound T extends ProjectileBurst).
+    compileOnly files('libs/ritchiesprojectilelib-2.1.2+mc.1.21.1-neoforge.jar')
+
+    // Create dependency (compileOnly — только для компиляции, в рантайме берётся из установленного мода)
+    compileOnly("com.simibubi.create:create-1.21.1:${create_version}:slim") { transitive = false }
+
+    // Veil dependency for Sodium/Iris post-processing shader support
+    compileOnly("foundry.veil:veil-neoforge-1.21.1:4.0.0")
+}
+
+tasks.register('printVeilRendererMethods') {
+    doLast {
+        def classpath = configurations.compileClasspath.files
+        def urls = classpath.collect { it.toURI().toURL() } as java.net.URL[]
+        def loader = new java.net.URLClassLoader(urls, ClassLoader.systemClassLoader)
+        try {
+            def clazz = loader.loadClass("foundry.veil.api.event.VeilRenderLevelStageEvent\$Stage")
+            println "Values of VeilRenderLevelStageEvent\$Stage:"
+            clazz.getEnumConstants().each { val ->
+                println "  " + val
+            }
+        } catch (Exception e) {
+            println "Could not load class: " + e.message
+        }
+    }
+}
+
+tasks.withType(ProcessResources).configureEach {
+    var replaceProperties = [
+            minecraft_version      : minecraft_version,
+            minecraft_version_range: minecraft_version_range,
+            neo_version            : neo_version,
+            loader_version_range   : loader_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_license            : mod_license,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description
+    ]
+    inputs.properties replaceProperties
+
+    filesMatching(['META-INF/neoforge.mods.toml', 'pack.mcmeta']) {
+        expand replaceProperties
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+task obfuscateJar(type: ProGuardTask, dependsOn: jar) {
+    configuration 'proguard-rules.pro'
+    
+    injars tasks.named("jar").get().archiveFile.get().asFile
+    outjars layout.buildDirectory.dir("libs").get().asFile.absolutePath + "/" + base.archivesName.get() + "-" + version + "-obf.jar"
+    
+    libraryjars files(configurations.compileClasspath.collect())
+    
+    // Add Java runtime libraries
+    if (System.getProperty('java.home') != null) {
+        libraryjars "${System.getProperty('java.home')}/jmods"
+    }
+}

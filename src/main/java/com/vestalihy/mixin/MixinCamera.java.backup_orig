@@ -1,0 +1,94 @@
+package com.vestalihy.mixin;
+
+import com.vestalihy.client.AimingHandler;
+import net.minecraft.client.Camera;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.phys.Vec3;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
+import com.mojang.logging.LogUtils;
+import org.slf4j.Logger;
+import java.util.Arrays;
+import org.spongepowered.asm.mixin.Final;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+@Mixin(Camera.class)
+public abstract class MixinCamera {
+
+    @Shadow private Vec3 position;
+    @Shadow @Final private BlockPos.MutableBlockPos blockPosition;
+    @Shadow @Final private Quaternionf rotation;
+    @Shadow @Final private Vector3f forwards;
+    @Shadow @Final private Vector3f up;
+    @Shadow @Final private Vector3f left;
+    @Shadow private float yRot;
+    @Shadow private float xRot;
+
+    private static final Logger LOGGER = LogUtils.getLogger();
+
+    @Inject(method = "setup", at = @At("RETURN"))
+    private void vestalihy$onSetup(BlockGetter level, Entity entity, boolean detached, boolean thirdPersonReverse, float partialTicks, CallbackInfo ci) {
+        if (AimingHandler.isAiming()) {
+            Vec3 globalPos = AimingHandler.getAbsoluteWorldCameraPosition(partialTicks);
+
+            float[] camRot = AimingHandler.getCameraRotation();
+            if (globalPos != null && camRot != null) {
+                    LOGGER.info("[aim-debug] MixinCamera.setup: globalPos={} camRot={} partialTicks={}", globalPos, Arrays.toString(camRot), partialTicks);
+                this.position = globalPos;
+                this.blockPosition.set(globalPos.x, globalPos.y, globalPos.z);
+
+                // camRot: [yaw, -pitch, roll]
+                float yaw = camRot[0];
+                // cameraRot stores -pitch already (see AimingHandler), so pass it through
+                // directly to rotationYXZ which expects -pitch (matches rifo-master).
+                float pitchParam = camRot[1];
+
+                Quaternionf localRot = new Quaternionf();
+                localRot.rotationYXZ(
+                    -yaw * (float) (Math.PI / 180.0f) + (float) Math.PI,
+                    pitchParam * (float) (Math.PI / 180.0f),
+                    0.0f
+                );
+
+                LOGGER.info("[aim-debug] MixinCamera.setup: localRot={} (yaw={} pitch={})", localRot, yaw, pitchParam);
+
+                // If Sable is present and the camera sits on a SubLevel, premultiply
+                // the sublevel pose orientation once so the camera ends up in world space.
+                Quaternionf finalRot = new Quaternionf(localRot);
+                try {
+                    net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+                    if (mc != null && mc.level != null) {
+                        Object subLevel = com.vestalihy.compat.SableHelper.getSubLevelManagingPos(mc.level, globalPos);
+                        if (subLevel instanceof dev.ryanhcode.sable.sublevel.SubLevel s) {
+                            dev.ryanhcode.sable.companion.math.Pose3dc pose = com.vestalihy.compat.SableHelper.getPose(s, partialTicks);
+                            if (pose != null) {
+                                finalRot = new Quaternionf(pose.orientation()).mul(localRot);
+                                LOGGER.info("[aim-debug] MixinCamera.setup: pose present, pose.orientation={} -> finalRot after premul={}", new Quaternionf(pose.orientation()), finalRot);
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+
+                this.rotation.set(finalRot);
+
+                this.forwards.set(0.0F, 0.0F, -1.0F).rotate(finalRot);
+                this.up.set(0.0F, 1.0F, 0.0F).rotate(finalRot);
+                this.left.set(-1.0F, 0.0F, 0.0F).rotate(finalRot);
+
+                Vector3f euler = finalRot.getEulerAnglesYXZ(new Vector3f());
+                float computedY = -180.0f - (float) Math.toDegrees(euler.y);
+                float computedX = (float) -Math.toDegrees(euler.x);
+                LOGGER.info("[aim-debug] MixinCamera.setup: finalRot={} eulerYXZ={} computedYRot={} computedXRot={}", finalRot, euler, computedY, computedX);
+                this.yRot = computedY;
+                this.xRot = computedX;
+            }
+        }
+    }
+}

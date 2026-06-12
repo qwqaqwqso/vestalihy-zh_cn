@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "facing=north": { "model": "vestalihy:block/aiming_block_ussr" },
+    "facing=south": { "model": "vestalihy:block/aiming_block_ussr", "y": 180 },
+    "facing=west": { "model": "vestalihy:block/aiming_block_ussr", "y": 270 },
+    "facing=east": { "model": "vestalihy:block/aiming_block_ussr", "y": 90 }
+  }
+}

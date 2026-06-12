@@ -1,0 +1,12 @@
+{
+    "block.vestalihy.aiming_block": "Aiming Block",
+    "block.vestalihy.aiming_block_ussr": "Aiming Block (USSR)",
+    "block.vestalihy.aiming_block_china": "Aiming Block (China)",
+    "block.vestalihy.aiming_block_nato": "Aiming Block (NATO)",
+    "block.vestalihy.aiming_block_btr": "Aiming Block (BTR)",
+    "block.vestalihy.optics_module": "Optics Module",
+    "block.vestalihy.commander_scope": "Commander Scope",
+    "block.vestalihy.ptur_controller": "PTUR Controller",
+    "item.vestalihy.optics_connector": "Optics Connector",
+    "itemGroup.vestalihy": "Vestalihy"
+}

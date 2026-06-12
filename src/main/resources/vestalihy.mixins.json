@@ -1,0 +1,26 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.vestalihy.mixin",
+  "plugin": "com.vestalihy.mixin.VestalihyMixinPlugin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "vestalihy.refmap.json",
+  "mixins": [
+  ],
+  "client": [
+    "MixinCamera",
+    "MixinClientLevel",
+    "MixinDimensionSpecialEffects",
+    "MixinEntityRenderer",
+    "MixinLevelRenderer",
+    "MixinLivingEntityRenderer",
+    "MixinMouseHandler",
+    "MixinShaderInstance",
+    "MixinSynaxisClientControlChairManager",
+    "MixinSynaxisExternalCameraHook",
+    "MixinVanillaSubLevelRenderDispatcher"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

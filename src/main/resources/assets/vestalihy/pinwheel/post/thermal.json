@@ -1,0 +1,9 @@
+{
+  "stages": [
+    {
+      "type": "veil:blit",
+      "shader": "vestalihy:thermal",
+      "in": "minecraft:main"
+    }
+  ]
+}

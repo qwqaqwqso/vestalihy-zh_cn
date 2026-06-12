@@ -1,0 +1,19 @@
+{
+  "variants": {
+    "facing=north": {
+      "model": "vestalihy:block/aiming_block_nato"
+    },
+    "facing=south": {
+      "model": "vestalihy:block/aiming_block_nato",
+      "y": 180
+    },
+    "facing=west": {
+      "model": "vestalihy:block/aiming_block_nato",
+      "y": 270
+    },
+    "facing=east": {
+      "model": "vestalihy:block/aiming_block_nato",
+      "y": 90
+    }
+  }
+}

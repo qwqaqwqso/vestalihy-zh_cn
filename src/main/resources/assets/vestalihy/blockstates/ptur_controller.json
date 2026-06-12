@@ -1,0 +1,6 @@
+{
+  "variants": {
+    "powered=true": { "model": "vestalihy:block/ptur_controller" },
+    "powered=false": { "model": "vestalihy:block/ptur_controller" }
+  }
+}
