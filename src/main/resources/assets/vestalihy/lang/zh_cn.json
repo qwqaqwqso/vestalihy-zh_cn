@@ -1,0 +1,12 @@
+{
+    "block.vestalihy.aiming_block": "瞄准器",
+    "block.vestalihy.aiming_block_ussr": "苏联瞄准器",
+    "block.vestalihy.aiming_block_china": "中国瞄准器",
+    "block.vestalihy.aiming_block_nato": "北约瞄准器",
+    "block.vestalihy.aiming_block_btr": "BTR瞄准器",
+    "block.vestalihy.optics_module": "光学瞄准模块",
+    "block.vestalihy.commander_scope": "导弹控制器",
+    "block.vestalihy.ptur_controller": "PTUR控制器",
+    "item.vestalihy.optics_connector": "光学瞄准连接器",
+    "itemGroup.vestalihy": "Vestalihy"
+}
